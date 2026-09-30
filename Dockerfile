@@ -1,5 +1,5 @@
-# syntax=docker/dockerfile:1.7
 # Multi-stage build: resolve deps with uv, ship a slim runtime with a non-root user.
+# Requires BuildKit (default in Docker Desktop / docker buildx) for --mount=type=cache.
 
 FROM python:3.12-slim-bookworm AS builder
 COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /uvx /bin/
@@ -18,20 +18,21 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 
 FROM python:3.12-slim-bookworm AS runtime
-# rasterio/geopandas wheels bundle GDAL/GEOS/PROJ; only libexpat-style basics are needed.
+# rasterio/geopandas wheels bundle GDAL/GEOS/PROJ, but GDAL still dlopens the system libexpat.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl libexpat1 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 app
 
 WORKDIR /app
 COPY --from=builder --chown=app:app /app /app
+# Writable data dir for the SQLite default + pipeline inputs; created as root, owned by app.
+RUN mkdir -p /app/data/local && chown -R app:app /app/data
 USER app
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     FIELD_INTEL_DATABASE_URL=sqlite:////app/data/local/field_intel.db \
     FIELD_INTEL_DATA_ROOT=/app/data
-RUN mkdir -p /app/data/local
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
